@@ -1133,7 +1133,13 @@ struct rq {
 #endif
 #ifdef OPLUS_FEATURE_SCHED_ASSIST
 	struct list_head ux_thread_list;
+	raw_spinlock_t ux_list_lock;
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
+#ifdef CONFIG_LOCKING_PROTECT
+	int rq_locking_task;
+	int rq_picked_locking_cont;
+	struct list_head locking_thread_list;
+#endif
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -3300,4 +3306,7 @@ struct sched_avg_stats {
 };
 extern void sched_get_nr_running_avg(struct sched_avg_stats *stats);
 
+#ifdef CONFIG_OPLUS_CPU_AUDIO_PERF
+extern struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu);
+#endif
 #endif // __KERNEL_SCHED_H__

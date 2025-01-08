@@ -31,6 +31,7 @@ int lcd_closebl_flag = 0;
 int spr_mode = 0;
 int dynamic_osc_clock = 139600;
 int mca_mode = 1;
+uint64_t serial_number0 = 0x0;
 extern int oplus_dimlayer_hbm;
 extern int oplus_dimlayer_bl;
 
@@ -425,6 +426,61 @@ int oplus_display_panel_get_vendor(void *buf)
 	return 0;
 }
 
+int oplus_display_panel_get_panel_name(void *buf)
+{
+	struct panel_name *p_name = buf;
+	struct dsi_display *display = NULL;
+	char *name = NULL;
+
+	display = get_main_display();
+
+	if (!display || !display->panel ||
+			!display->panel->name) {
+		pr_err("failed to config lcd panel name\n");
+		return -EINVAL;
+	}
+
+	name = (char *)display->panel->name;
+
+	memcpy(p_name->name, name,
+			strlen(name) >= (PANEL_NAME_LENS - 1) ? (PANEL_NAME_LENS - 1) : (strlen(name) + 1));
+
+	return 0;
+}
+
+int oplus_display_panel_get_panel_bpp(void *buf)
+{
+	uint32_t *panel_bpp = buf;
+	int bpp = 0;
+	int rc = 0;
+	struct dsi_display *display = get_main_display();
+	struct dsi_parser_utils *utils = NULL;
+
+	if (!display || !display->panel) {
+		pr_err("display or panel is null\n");
+		return -EINVAL;
+	}
+
+	utils = &display->panel->utils;
+	if (!utils) {
+		pr_err("utils is null\n");
+		return -EINVAL;
+	}
+
+	rc = utils->read_u32(utils->data, "qcom,mdss-dsi-bpp", &bpp);
+	printk("qcom,mdss-dsi-bpp=%d\n", bpp);
+
+	if (rc) {
+		pr_err("failed to read qcom,mdss-dsi-bpp, rc=%d\n", rc);
+		return -EINVAL;
+	}
+
+	*panel_bpp = bpp / RGB_COLOR_WEIGHT;
+
+	return 0;
+}
+
+
 int oplus_display_panel_get_ccd_check(void *buf)
 {
 	struct dsi_display *display = get_main_display();
@@ -579,6 +635,7 @@ end:
 int oplus_display_panel_get_serial_number(void *buf) {
 	int ret = 0;
 	unsigned char read[30];
+	char value[] = { 0x5A, 0x5A };
 	PANEL_SERIAL_INFO panel_serial_info;
 	struct panel_serial_number* panel_rnum = buf;
 	uint64_t serial_number;
@@ -592,6 +649,17 @@ int oplus_display_panel_get_serial_number(void *buf) {
 
 	if(get_oplus_display_power_status() != OPLUS_DISPLAY_POWER_ON) {
 		printk(KERN_ERR"%s display panel in off status\n", __func__);
+		return ret;
+	}
+
+	/*
+	* To fix bug id 5552142, we do not read serial number frequently.
+	* First read, then return the saved value.
+	*/
+	if (serial_number0 != 0) {
+		ret = scnprintf(panel_rnum->serial_number, PAGE_SIZE, "Get panel serial number: %llx\n",
+						serial_number0);
+		pr_info("%s read serial_number0 0x%x\n", __func__, serial_number0);
 		return ret;
 	}
 
@@ -610,17 +678,14 @@ int oplus_display_panel_get_serial_number(void *buf) {
 					dsi_display_clk_ctrl(display->dsi_clk_handle,
 							DSI_ALL_CLKS, DSI_CLK_ON);
 				}
-				 {
-					char value[] = { 0x5A, 0x5A };
-					ret = mipi_dsi_dcs_write(&display->panel->mipi_device, 0xF0, value, sizeof(value));
-				 }
+				ret = mipi_dsi_dcs_write(&display->panel->mipi_device, 0xF0, value, sizeof(value));
 				if (display->config.panel_mode == DSI_OP_CMD_MODE) {
 					dsi_display_clk_ctrl(display->dsi_clk_handle,
 							DSI_ALL_CLKS, DSI_CLK_OFF);
 				}
-				mutex_unlock(&display->panel->panel_lock);
-				mutex_unlock(&display->display_lock);
 			}
+			mutex_unlock(&display->panel->panel_lock);
+			mutex_unlock(&display->display_lock);
 			if(ret < 0) {
 				ret = scnprintf(buf, PAGE_SIZE,
 						"Get panel serial number failed, reason:%d", ret);
@@ -686,6 +751,8 @@ int oplus_display_panel_get_serial_number(void *buf) {
 		}
 
 		ret = scnprintf(panel_rnum->serial_number, PAGE_SIZE, "Get panel serial number: %llx\n",serial_number);
+		/*Save serial_number value.*/
+		serial_number0 = serial_number;
 		break;
 	}
 
@@ -1356,3 +1423,21 @@ int oplus_display_set_dither_status(void *buf)
 
 	return 0;
 }
+
+/* Apollo DC backlight */
+int oplus_display_panel_set_dc_real_brightness(void *data)
+{
+	struct dsi_display *display = get_main_display();
+	uint32_t *temp_save = data;
+	int rc = 0;
+
+	if (!display || !display->panel) {
+		pr_err("%s: display or display->panel is null\n", __func__);
+		return -EINVAL;
+	}
+
+	display->panel->bl_config.bl_dc_real = *temp_save;
+
+	return rc;
+}
+

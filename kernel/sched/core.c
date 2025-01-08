@@ -40,18 +40,20 @@
 #include <linux/task_sched_info.h>
 #endif /* defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_SCHED) */
 
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-#include <linux/tuning/frame_info.h>
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
-
 #ifdef CONFIG_OPLUS_FEATURE_GAME_OPT
 #include "../../drivers/soc/oplus/game_opt/game_ctrl.h"
 #endif
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)
-#include <linux/cpu_jankinfo/sa_jankinfo.h>
+#include <linux/sched_assist/sa_jankinfo.h>
+#include <linux/sched_info/osi_tasktrack.h>
 #endif
-
+#ifdef CONFIG_LOCKING_PROTECT
+#include <linux/sched_assist/sched_assist_locking.h>
+#endif
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+#include "../tuning/frame_group.h"
+#endif
 
 #ifdef CONFIG_SCHED_DEBUG
 /*
@@ -2786,16 +2788,6 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags,
 {
 	unsigned long flags;
 	int cpu, success = 0;
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-	bool in_grp = false;
-	struct frame_boost_group *grp = NULL;
-	rcu_read_lock();
-	grp = task_frame_boost_group(p);
-	rcu_read_unlock();
-	if (grp) {
-		in_grp = true;
-	}
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
 
 	/*
 	 * If we are going to wake up a thread waiting for CONDITION we
@@ -2814,9 +2806,6 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags,
 	update_wake_tid(p, current, other_runnable);
 #endif /* defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_SCHED) */
 
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-	trace_sched_in_fbg(p, in_grp);
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
 #ifdef CONFIG_OPLUS_FEATURE_RT_INFO
     if (rt_handler != NULL)
         rt_handler(p);
@@ -3186,7 +3175,9 @@ static inline void init_schedstats(void) {}
 int sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
 	unsigned long flags;
-
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+	fbg_sched_fork_hook(NULL, p);
+#endif
 	init_new_task_load(p);
 	__sched_fork(clone_flags, p);
 	/*
@@ -3609,9 +3600,9 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 		g_rt_task_dead(prev);
 #endif
 
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-	        sched_set_frame_boost_group(prev, false);
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+		fbg_flush_task_hook(NULL, prev);
+#endif
 
 		/* Task is done with its stack. */
 		put_task_stack(prev);
@@ -3944,7 +3935,6 @@ unsigned long long task_sched_runtime(struct task_struct *p)
 }
 
 unsigned int capacity_margin_freq = 1280; /* ~20% margin */
-#ifndef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
 #ifdef OPLUS_FEATURE_SCHED_ASSIST
 extern int sysctl_frame_rate;
 extern unsigned int sched_ravg_window;
@@ -3987,7 +3977,6 @@ static u64 calc_freq_ux_load(struct task_struct *p, u64 wallclock)
 	return max(freq_exec_load, freq_ravg_load);
 }
 #endif
-#endif
 /*
  * This function gets called by the timer code, with HZ frequency.
  * We call it with interrupts disabled.
@@ -4022,7 +4011,6 @@ void scheduler_tick(void)
 	if (early_notif)
 		flag = SCHED_CPUFREQ_WALT | SCHED_CPUFREQ_EARLY_DET;
 
-#ifndef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
 #ifdef OPLUS_FEATURE_SCHED_ASSIST
 	if (sched_assist_scene(SA_SLIDE)) {
 		if(rq->curr && is_heavy_ux_task(rq->curr) && !ux_task_misfit(rq->curr, cpu)) {
@@ -4040,11 +4028,7 @@ void scheduler_tick(void)
 		ux_load_ts[cpu] = 0;
 	}
 #endif
-#endif
 	cpufreq_update_util(rq, flag);
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-	sched_update_fbg_tick(rq->curr, wallclock);
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
 	rq_unlock(rq, &rf);
 
 	perf_event_task_tick();
@@ -4066,10 +4050,17 @@ void scheduler_tick(void)
 #ifdef CONFIG_SMP
 	rq_lock(rq, &rf);
 	if (idle_cpu(cpu) && is_reserved(cpu) && !rq->active_balance)
-		clear_reserved(cpu);
+ 		clear_reserved(cpu);
 	rq_unlock(rq, &rf);
 #endif
-
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)
+#if defined(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY) && defined(OPLUS_FEATURE_SCHED_ASSIST)
+	osi_scheduler_tick_handler(NULL, rq);
+#endif
+#endif
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+	android_vh_scheduler_tick_handler(rq);
+#endif
 #if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_SPREAD)
 	update_rq_nr_imbalance(cpu);
 #endif
@@ -4515,6 +4506,9 @@ static void __sched notrace __schedule(bool preempt)
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)
 	jankinfo_android_rvh_schedule_handler(NULL, prev, next, rq);
 #endif
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+	fbg_android_rvh_schedule_handler(prev, next, rq);
+#endif
 	if (likely(prev != next)) {
 		if (!prev->on_rq)
 			prev->last_sleep_ts = wallclock;
@@ -4540,7 +4534,12 @@ static void __sched notrace __schedule(bool preempt)
 		++*switch_count;
 
 		trace_sched_switch(preempt, prev, next);
-
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_UX_PRIORITY)
+		ux_priority_systrace_c(cpu_of(rq), next);
+#endif
+#ifdef CONFIG_LOCKING_PROTECT
+		locking_state_systrace_c(cpu_of(rq), next);
+#endif
 #if defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_SCHED)
 		update_wake_tid(prev, next, running_runnable);
 		update_running_start_time(prev, next);
@@ -7530,6 +7529,9 @@ void __init sched_init(void)
 #ifdef OPLUS_FEATURE_SCHED_ASSIST
 		ux_init_rq_data(rq);
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
+#ifdef CONFIG_LOCKING_PROTECT
+		locking_init_rq_data(rq);
+#endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);

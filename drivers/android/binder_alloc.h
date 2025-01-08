@@ -23,6 +23,7 @@
 #include <linux/slab.h>
 #include <linux/list_lru.h>
 #include <uapi/linux/android/binder.h>
+#include <uapi/linux/android/binderfs.h>
 
 extern struct list_lru binder_alloc_lru;
 struct binder_transaction;

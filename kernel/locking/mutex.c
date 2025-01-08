@@ -40,6 +40,14 @@
 #include <soc/oplus/system/oplus_signal.h>
 #endif
 
+#ifdef CONFIG_LOCKING_PROTECT
+#include <linux/sched_assist/sched_assist_locking.h>
+#endif
+
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
+#include <linux/sched_assist/sync/mutex.h>
+#endif
+
 void
 __mutex_init(struct mutex *lock, const char *name, struct lock_class_key *key)
 {
@@ -49,9 +57,9 @@ __mutex_init(struct mutex *lock, const char *name, struct lock_class_key *key)
 #ifdef CONFIG_MUTEX_SPIN_ON_OWNER
 	osq_lock_init(&lock->osq);
 #endif
-#ifdef OPLUS_FEATURE_SCHED_ASSIST
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
 	lock->ux_dep_task = NULL;
-#endif /* OPLUS_FEATURE_SCHED_ASSIST */
+#endif
 	debug_mutex_init(lock, name, key);
 }
 EXPORT_SYMBOL(__mutex_init);
@@ -184,34 +192,28 @@ static inline bool __mutex_waiter_is_first(struct mutex *lock, struct mutex_wait
  * Add @waiter to a given location in the lock wait_list and set the
  * FLAG_WAITERS flag if it's the first waiter.
  */
-static void
+static void __sched
 __mutex_add_waiter(struct mutex *lock, struct mutex_waiter *waiter,
 		   struct list_head *list)
 {
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
+	bool already_on_list = false;
+#endif
 	debug_mutex_add_waiter(lock, waiter, current);
 
-#ifndef OPLUS_FEATURE_SCHED_ASSIST
-	list_add_tail(&waiter->list, list);
-#else /* OPLUS_FEATURE_SCHED_ASSIST */
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
 	if (sysctl_sched_assist_enabled) {
 		mutex_list_add(current, &waiter->list, list, lock);
-	} else {
-		list_add_tail(&waiter->list, list);
+		already_on_list = true;
 	}
-#endif /* OPLUS_FEATURE_SCHED_ASSIST */
-
+	locking_vh_alter_mutex_list_add(lock, waiter, list, &already_on_list);
+	if (!already_on_list)
+		list_add_tail(&waiter->list, list);
+#else
+	list_add_tail(&waiter->list, list);
+#endif
 	if (__mutex_waiter_is_first(lock, waiter))
 		__mutex_set_flag(lock, MUTEX_FLAG_WAITERS);
-}
-
-static void
-__mutex_remove_waiter(struct mutex *lock, struct mutex_waiter *waiter)
-{
-	list_del(&waiter->list);
-	if (likely(list_empty(&lock->wait_list)))
-		__mutex_clear_flag(lock, MUTEX_FLAGS);
-
-	debug_mutex_remove_waiter(lock, waiter, current);
 }
 
 /*
@@ -279,6 +281,9 @@ void __sched mutex_lock(struct mutex *lock)
 {
 	might_sleep();
 
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	if (!__mutex_trylock_fast(lock))
 		__mutex_lock_slowpath(lock);
 }
@@ -550,9 +555,19 @@ bool mutex_spin_on_owner(struct mutex *lock, struct task_struct *owner,
 			 struct ww_acquire_ctx *ww_ctx, struct mutex_waiter *waiter)
 {
 	bool ret = true;
-
+#ifdef CONFIG_OPLUS_LOCKING_OSQ
+	int cnt = 0;
+	bool time_out = false;
+#endif
 	rcu_read_lock();
 	while (__mutex_owner(lock) == owner) {
+#ifdef CONFIG_OPLUS_LOCKING_OSQ
+		locking_vh_mutex_opt_spin_start(lock, &time_out, &cnt);
+		if (time_out) {
+  			ret = false;
+			break;
+		}
+#endif
 		/*
 		 * Ensure we emit the owner->on_cpu, dereference _after_
 		 * checking lock->owner still matches owner. If that fails,
@@ -603,7 +618,9 @@ static inline int mutex_can_spin_on_owner(struct mutex *lock)
 	if (owner)
 		retval = owner->on_cpu && !vcpu_is_preempted(task_cpu(owner));
 	rcu_read_unlock();
-
+#ifdef CONFIG_OPLUS_LOCKING_OSQ
+	locking_vh_mutex_can_spin_on_owner(lock, &retval);
+#endif
 	/*
 	 * If lock->owner is not set, the mutex has been released. Return true
 	 * such that we'll trylock in the spin path, which is a faster option
@@ -635,7 +652,7 @@ static inline int mutex_can_spin_on_owner(struct mutex *lock)
  */
 static __always_inline bool
 mutex_optimistic_spin(struct mutex *lock, struct ww_acquire_ctx *ww_ctx,
-		      struct mutex_waiter *waiter)
+		      const bool use_ww_ctx, struct mutex_waiter *waiter)
 {
 	if (!waiter) {
 		/*
@@ -694,7 +711,9 @@ mutex_optimistic_spin(struct mutex *lock, struct ww_acquire_ctx *ww_ctx,
 
 	if (!waiter)
 		osq_unlock(&lock->osq);
-
+#ifdef CONFIG_OPLUS_LOCKING_OSQ
+	locking_vh_mutex_opt_spin_finish(lock, true);
+#endif
 	return true;
 
 
@@ -703,6 +722,9 @@ fail_unlock:
 		osq_unlock(&lock->osq);
 
 fail:
+#ifdef CONFIG_OPLUS_LOCKING_OSQ
+	locking_vh_mutex_opt_spin_finish(lock, false);
+#endif
 	/*
 	 * If we fell out of the spin path because of need_resched(),
 	 * reschedule now, before we try-lock the mutex. This avoids getting
@@ -722,7 +744,7 @@ fail:
 #else
 static __always_inline bool
 mutex_optimistic_spin(struct mutex *lock, struct ww_acquire_ctx *ww_ctx,
-		      struct mutex_waiter *waiter)
+		      const bool use_ww_ctx, struct mutex_waiter *waiter)
 {
 	return false;
 }
@@ -743,6 +765,9 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
  */
 void __sched mutex_unlock(struct mutex *lock)
 {
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, 0);
+#endif
 #ifndef CONFIG_DEBUG_LOCK_ALLOC
 	if (__mutex_unlock_fast(lock))
 		return;
@@ -938,16 +963,14 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 		    struct ww_acquire_ctx *ww_ctx, const bool use_ww_ctx)
 {
 	struct mutex_waiter waiter;
+	bool first = false;
 	struct ww_mutex *ww;
 	int ret;
-
-	if (!use_ww_ctx)
-		ww_ctx = NULL;
 
 	might_sleep();
 
 	ww = container_of(lock, struct ww_mutex, base);
-	if (ww_ctx) {
+	if (use_ww_ctx && ww_ctx) {
 		if (unlikely(ww_ctx == READ_ONCE(ww->ctx)))
 			return -EALREADY;
 
@@ -964,10 +987,10 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	mutex_acquire_nest(&lock->dep_map, subclass, 0, nest_lock, ip);
 
 	if (__mutex_trylock(lock) ||
-	    mutex_optimistic_spin(lock, ww_ctx, NULL)) {
+	    mutex_optimistic_spin(lock, ww_ctx, use_ww_ctx, NULL)) {
 		/* got the lock, yay! */
 		lock_acquired(&lock->dep_map, ip);
-		if (ww_ctx)
+		if (use_ww_ctx && ww_ctx)
 			ww_mutex_set_context_fastpath(ww, ww_ctx);
 		preempt_enable();
 		return 0;
@@ -978,7 +1001,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	 * After waiting to acquire the wait_lock, try again.
 	 */
 	if (__mutex_trylock(lock)) {
-		if (ww_ctx)
+		if (use_ww_ctx && ww_ctx)
 			__ww_mutex_check_waiters(lock, ww_ctx);
 
 		goto skip_wait;
@@ -1009,11 +1032,14 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	}
 
 	waiter.task = current;
-
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
+	locking_vh_mutex_wait_start(lock);
+#endif
+#ifdef CONFIG_LOCKING_PROTECT
+	update_locking_time(jiffies, false);
+#endif
 	set_current_state(state);
 	for (;;) {
-		bool first;
-
 		/*
 		 * Once we hold wait_lock, we're serialized against
 		 * mutex_unlock() handing the lock off to us, do a trylock
@@ -1038,16 +1064,16 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 			goto err;
 		}
 
-		if (ww_ctx) {
+		if (use_ww_ctx && ww_ctx) {
 			ret = __ww_mutex_check_kill(lock, &waiter, ww_ctx);
 			if (ret)
 				goto err;
 		}
-#ifdef OPLUS_FEATURE_SCHED_ASSIST
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
 		if (sysctl_sched_assist_enabled) {
 			mutex_set_inherit_ux(lock, current);
 		}
-#endif /* OPLUS_FEATURE_SCHED_ASSIST */
+#endif
 		spin_unlock(&lock->wait_lock);
 #ifdef OPLUS_FEATURE_HEALTHINFO
 #ifdef CONFIG_OPLUS_JANK_INFO
@@ -1065,9 +1091,15 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 #endif
 #endif /* OPLUS_FEATURE_HEALTHINFO */
 
-		first = __mutex_waiter_is_first(lock, &waiter);
-		if (first)
-			__mutex_set_flag(lock, MUTEX_FLAG_HANDOFF);
+		/*
+		 * ww_mutex needs to always recheck its position since its waiter
+		 * list is not FIFO ordered.
+		 */
+		if ((use_ww_ctx && ww_ctx) || !first) {
+			first = __mutex_waiter_is_first(lock, &waiter);
+			if (first)
+				__mutex_set_flag(lock, MUTEX_FLAG_HANDOFF);
+		}
 
 		set_current_state(state);
 		/*
@@ -1076,7 +1108,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 		 * or we must see its unlock and acquire.
 		 */
 		if (__mutex_trylock(lock) ||
-		    (first && mutex_optimistic_spin(lock, ww_ctx, &waiter)))
+		    (first && mutex_optimistic_spin(lock, ww_ctx, use_ww_ctx, &waiter)))
 			break;
 
 		spin_lock(&lock->wait_lock);
@@ -1084,8 +1116,10 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	spin_lock(&lock->wait_lock);
 acquired:
 	__set_current_state(TASK_RUNNING);
-
-	if (ww_ctx) {
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
+	locking_vh_mutex_wait_finish(lock);
+#endif
+	if (use_ww_ctx && ww_ctx) {
 		/*
 		 * Wound-Wait; we stole the lock (!first_waiter), check the
 		 * waiters as anyone might want to wound us.
@@ -1095,7 +1129,9 @@ acquired:
 			__ww_mutex_check_waiters(lock, ww_ctx);
 	}
 
-	__mutex_remove_waiter(lock, &waiter);
+	mutex_remove_waiter(lock, &waiter, current);
+	if (likely(list_empty(&lock->wait_list)))
+		__mutex_clear_flag(lock, MUTEX_FLAGS);
 
 	debug_mutex_free_waiter(&waiter);
 
@@ -1103,7 +1139,7 @@ skip_wait:
 	/* got the lock - cleanup and rejoice! */
 	lock_acquired(&lock->dep_map, ip);
 
-	if (ww_ctx)
+	if (use_ww_ctx && ww_ctx)
 		ww_mutex_lock_acquired(ww, ww_ctx);
 
 	spin_unlock(&lock->wait_lock);
@@ -1112,7 +1148,10 @@ skip_wait:
 
 err:
 	__set_current_state(TASK_RUNNING);
-	__mutex_remove_waiter(lock, &waiter);
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
+	locking_vh_mutex_wait_finish(lock);
+#endif
+	mutex_remove_waiter(lock, &waiter, current);
 err_early_kill:
 	spin_unlock(&lock->wait_lock);
 	debug_mutex_free_waiter(&waiter);
@@ -1141,6 +1180,9 @@ void __sched
 mutex_lock_nested(struct mutex *lock, unsigned int subclass)
 {
 	__mutex_lock(lock, TASK_UNINTERRUPTIBLE, subclass, NULL, _RET_IP_);
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 }
 
 EXPORT_SYMBOL_GPL(mutex_lock_nested);
@@ -1149,12 +1191,18 @@ void __sched
 _mutex_lock_nest_lock(struct mutex *lock, struct lockdep_map *nest)
 {
 	__mutex_lock(lock, TASK_UNINTERRUPTIBLE, 0, nest, _RET_IP_);
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 }
 EXPORT_SYMBOL_GPL(_mutex_lock_nest_lock);
 
 int __sched
 mutex_lock_killable_nested(struct mutex *lock, unsigned int subclass)
 {
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	return __mutex_lock(lock, TASK_KILLABLE, subclass, NULL, _RET_IP_);
 }
 EXPORT_SYMBOL_GPL(mutex_lock_killable_nested);
@@ -1162,6 +1210,9 @@ EXPORT_SYMBOL_GPL(mutex_lock_killable_nested);
 int __sched
 mutex_lock_interruptible_nested(struct mutex *lock, unsigned int subclass)
 {
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	return __mutex_lock(lock, TASK_INTERRUPTIBLE, subclass, NULL, _RET_IP_);
 }
 EXPORT_SYMBOL_GPL(mutex_lock_interruptible_nested);
@@ -1173,6 +1224,9 @@ mutex_lock_io_nested(struct mutex *lock, unsigned int subclass)
 
 	might_sleep();
 
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	token = io_schedule_prepare();
 	__mutex_lock_common(lock, TASK_UNINTERRUPTIBLE,
 			    subclass, NULL, _RET_IP_, NULL, 0);
@@ -1212,6 +1266,9 @@ ww_mutex_lock(struct ww_mutex *lock, struct ww_acquire_ctx *ctx)
 	int ret;
 
 	might_sleep();
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	ret =  __ww_mutex_lock(&lock->base, TASK_UNINTERRUPTIBLE,
 			       0, ctx ? &ctx->dep_map : NULL, _RET_IP_,
 			       ctx);
@@ -1228,6 +1285,9 @@ ww_mutex_lock_interruptible(struct ww_mutex *lock, struct ww_acquire_ctx *ctx)
 	int ret;
 
 	might_sleep();
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	ret = __ww_mutex_lock(&lock->base, TASK_INTERRUPTIBLE,
 			      0, ctx ? &ctx->dep_map : NULL, _RET_IP_,
 			      ctx);
@@ -1285,11 +1345,6 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 	spin_lock(&lock->wait_lock);
 	debug_mutex_unlock(lock);
-#ifdef OPLUS_FEATURE_SCHED_ASSIST
-	if (sysctl_sched_assist_enabled) {
-		mutex_unset_inherit_ux(lock, current);
-	}
-#endif /* OPLUS_FEATURE_SCHED_ASSIST */
 	if (!list_empty(&lock->wait_list)) {
 		/* get the first entry from the wait-list: */
 		struct mutex_waiter *waiter =
@@ -1308,6 +1363,11 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 	spin_unlock(&lock->wait_lock);
 
 	wake_up_q(&wake_q);
+#ifdef CONFIG_OPLUS_LOCKING_STRATEGY
+	if (sysctl_sched_assist_enabled) {
+		mutex_unset_inherit_ux(lock, current);
+	}
+#endif
 }
 
 #ifndef CONFIG_DEBUG_LOCK_ALLOC
@@ -1337,6 +1397,9 @@ int __sched mutex_lock_interruptible(struct mutex *lock)
 {
 	might_sleep();
 
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	if (__mutex_trylock_fast(lock))
 		return 0;
 
@@ -1361,6 +1424,9 @@ int __sched mutex_lock_killable(struct mutex *lock)
 {
 	might_sleep();
 
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	if (__mutex_trylock_fast(lock))
 		return 0;
 
@@ -1382,6 +1448,9 @@ void __sched mutex_lock_io(struct mutex *lock)
 {
 	int token;
 
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 	token = io_schedule_prepare();
 	mutex_lock(lock);
 	io_schedule_finish(token);
@@ -1441,8 +1510,12 @@ int __sched mutex_trylock(struct mutex *lock)
 {
 	bool locked = __mutex_trylock(lock);
 
-	if (locked)
+	if (locked) {
+		#ifdef CONFIG_LOCKING_PROTECT
+		record_locking_info(current, jiffies);
+		#endif
 		mutex_acquire(&lock->dep_map, 0, 1, _RET_IP_);
+	}
 
 	return locked;
 }

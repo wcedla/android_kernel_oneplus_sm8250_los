@@ -4006,10 +4006,6 @@ __wlan_hdd_cfg80211_get_features(struct wiphy *wiphy,
 		wlan_hdd_cfg80211_set_feature(feature_flags,
 			QCA_WLAN_VENDOR_FEATURE_OFFCHANNEL_SIMULTANEOUS);
 
-	if (policy_mgr_is_hw_dbs_capable(hdd_ctx->psoc))
-		wlan_hdd_cfg80211_set_feature(feature_flags,
-			QCA_WLAN_VENDOR_FEATURE_CONCURRENT_BAND_SESSIONS);
-
 	if (wma_is_p2p_lo_capable())
 		wlan_hdd_cfg80211_set_feature(feature_flags,
 			QCA_WLAN_VENDOR_FEATURE_P2P_LISTEN_OFFLOAD);
@@ -8062,7 +8058,7 @@ static int hdd_config_latency_level(struct hdd_adapter *adapter,
 	QDF_STATUS status;
 
 	if (!hdd_is_wlm_latency_manager_supported(hdd_ctx))
-		return -ENOTSUPP;
+		return -EINVAL;
 
 	latency_level = nla_get_u16(attr);
 	switch (latency_level) {
@@ -18883,8 +18879,7 @@ static int wlan_hdd_cfg80211_connect_start(struct hdd_adapter *adapter,
 				    const u8 *ssid, size_t ssid_len,
 				    const u8 *bssid, const u8 *bssid_hint,
 				    uint32_t oper_freq,
-				    enum nl80211_chan_width ch_width,
-				    uint32_t ch_freq_hint)
+				    enum nl80211_chan_width ch_width)
 {
 	int status = 0;
 	QDF_STATUS qdf_status;
@@ -19099,8 +19094,6 @@ static int wlan_hdd_cfg80211_connect_start(struct hdd_adapter *adapter,
 			hdd_select_cbmode(adapter, oper_freq,
 					  &roam_profile->ch_params);
 		}
-
-		roam_profile->freq_hint = ch_freq_hint;
 
 		if (wlan_hdd_cfg80211_check_pmf_valid(roam_profile)) {
 			status = -EINVAL;
@@ -20671,8 +20664,7 @@ static int __wlan_hdd_cfg80211_join_ibss(struct wiphy *wiphy,
 						 params->ssid_len,
 						 bssid.bytes, NULL,
 						 conn_info_channel,
-						 params->chandef.width,
-						 0);
+						 params->chandef.width);
 
 	if (0 > status) {
 		hdd_err("connect failed");
@@ -21349,7 +21341,6 @@ static int __wlan_hdd_cfg80211_connect(struct wiphy *wiphy,
 	struct hdd_context *hdd_ctx;
 	uint8_t vdev_id_list[MAX_NUMBER_OF_CONC_CONNECTIONS], i;
 	bool disable_nan = true;
-	uint32_t ch_freq_hint = 0;
 
 	hdd_enter();
 
@@ -21474,15 +21465,11 @@ static int __wlan_hdd_cfg80211_connect(struct wiphy *wiphy,
 	else
 		ch_freq = 0;
 
-	if (req->channel_hint)
-		ch_freq_hint = req->channel_hint->center_freq;
-
 	wlan_hdd_check_ht20_ht40_ind(hdd_ctx, adapter, req);
 
 	status = wlan_hdd_cfg80211_connect_start(adapter, req->ssid,
 						 req->ssid_len, req->bssid,
-						 bssid_hint, ch_freq, 0,
-						 ch_freq_hint);
+						 bssid_hint, ch_freq, 0);
 	if (status) {
 		wlan_hdd_cfg80211_clear_privacy(adapter);
 		hdd_err("connect failed");

@@ -83,6 +83,10 @@
 #include "binder_internal.h"
 #include "binder_trace.h"
 
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+#include "../../include/linux/tuning/frame_group.h"
+#endif
+
 #ifdef OPLUS_FEATURE_HANS_FREEZE
 #include <linux/hans.h>
 #endif /*OPLUS_FEATURE_HANS_FREEZE*/
@@ -90,12 +94,8 @@
 #include <linux/sched_assist/sched_assist_binder.h>
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
 
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-#include <linux/tuning/frame_boost_group.h>
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
-
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)
-#include <linux/cpu_jankinfo/jank_tasktrack.h>
+#include <linux/sched_info/osi_tasktrack.h>
 #endif
 
 static HLIST_HEAD(binder_deferred_list);
@@ -3383,11 +3383,6 @@ static bool binder_proc_transaction(struct binder_transaction *t,
 				binder_set_inherit_ux(thread->task, current);
 		}
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-		if (t->from) {
-			binder_thread_set_fbg(thread->task, t->from->task, oneway);
-		}
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
 	} else if (!pending_async) {
 #if defined(CONFIG_OPLUS_FEATURE_BINDER_STATS_ENABLE)
 		if (NULL != proc && NULL != proc->tsk) {
@@ -3409,6 +3404,10 @@ static bool binder_proc_transaction(struct binder_transaction *t,
 #endif
 		binder_enqueue_work_ilocked(&t->work, &node->async_todo);
 	}
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+	fbg_binder_wakeup_hook(NULL, current, proc->tsk, thread ? thread->task :NULL, t->code,
+			pending_async, !oneway);
+#endif
 
 	if (!pending_async) {
 #if defined(OPLUS_FEATURE_SCHED_ASSIST)
@@ -4097,9 +4096,6 @@ static void binder_transaction(struct binder_proc *proc,
 	t->work.type = BINDER_WORK_TRANSACTION;
 
 	if (reply) {
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-		bool oneway = !!(t->flags & TF_ONE_WAY);
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
 		binder_enqueue_thread_work(thread, tcomplete);
 		binder_inner_proc_lock(target_proc);
 		if (target_thread->is_dead) {
@@ -4117,13 +4113,13 @@ static void binder_transaction(struct binder_proc *proc,
 			binder_unset_inherit_ux(thread->task);
 		}
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-		binder_thread_remove_fbg(thread->task, oneway);
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
 #ifdef CONFIG_OPLUS_BINDER_STRATEGY
 		binder_inner_proc_lock(proc);
 		obwork_check_restrict_off(proc);
 		binder_inner_proc_unlock(proc);
+#endif
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+		fbg_binder_restore_priority_hook(NULL, in_reply_to, current);
 #endif
 		binder_restore_priority(current, in_reply_to->saved_priority);
 		binder_free_transaction(in_reply_to);
@@ -4235,6 +4231,9 @@ err_invalid_target_handle:
 
 	BUG_ON(thread->return_error.cmd != BR_OK);
 	if (in_reply_to) {
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+		fbg_binder_restore_priority_hook(NULL, in_reply_to, current);
+#endif
 		binder_restore_priority(current, in_reply_to->saved_priority);
 		thread->return_error.cmd = BR_TRANSACTION_COMPLETE;
 		binder_enqueue_thread_work(thread, &thread->return_error.work);
@@ -4784,6 +4783,9 @@ static int binder_wait_for_work(struct binder_thread *thread,
 			list_add(&thread->waiting_thread_node,
 				 &proc->waiting_threads);
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+		fbg_binder_wait_for_work_hook(NULL, do_proc_work, thread, proc);
+#endif
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)
 		android_vh_binder_wait_for_work_hanlder(NULL,
 			do_proc_work, thread, proc);
@@ -4850,6 +4852,9 @@ retry:
 			wait_event_interruptible(binder_user_error_wait,
 						 binder_stop_on_user_error < 2);
 		}
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+		fbg_binder_restore_priority_hook(NULL, NULL, current);
+#endif
 		binder_restore_priority(current, proc->default_priority);
 	}
 
@@ -5107,6 +5112,9 @@ retry:
 				binder_set_inherit_ux(thread->task, t_from->task);
 			}
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
+#if defined(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+			fbg_sync_txn_recvd_hook(NULL, thread->task, t_from->task);
+#endif
 		} else {
 			trd->sender_pid = 0;
 		}

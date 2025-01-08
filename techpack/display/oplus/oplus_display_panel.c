@@ -89,12 +89,16 @@ static const struct panel_ioctl_desc panel_ioctls[] = {
 	PANEL_IOCTL_DEF(PANEL_IOCTL_GET_DITHER_STATUS, oplus_display_get_dither_status),
 	PANEL_IOCTL_DEF(PANEL_IOCTL_SET_FP_PRESS, oplus_display_panel_notify_fp_press),
 	PANEL_IOCTL_DEF(PANEL_IOCTL_SET_CABC_STATUS, oplus_display_panel_set_cabc),
+	PANEL_IOCTL_DEF(PANEL_IOCTL_GET_PANEL_NAME, oplus_display_panel_get_panel_name),
+	PANEL_IOCTL_DEF(PANEL_IOCTL_GET_PANEL_BPP, oplus_display_panel_get_panel_bpp),
 	PANEL_IOCTL_DEF(PANEL_IOCTL_GET_CABC_STATUS, oplus_display_panel_get_cabc),
 	#ifdef OPLUS_FEATURE_AOD_RAMLESS
 	PANEL_IOCTL_DEF(PANEL_IOCTL_SET_AOD_AREA, oplus_ramless_panel_set_aod_area),
 	#endif /* OPLUS_FEATURE_AOD_RAMLESS */
 	PANEL_IOCTL_DEF(PANEL_IOCTL_SET_FP_TYPE, oplus_ofp_set_fp_type),
 	PANEL_IOCTL_DEF(PANEL_IOCTL_GET_FP_TYPE, oplus_ofp_get_fp_type),
+	/* Apollo DC backlight */
+	PANEL_IOCTL_DEF(PANEL_IOCTL_SET_DC_REAL_BACKLIGHT, oplus_display_panel_set_dc_real_brightness),
 };
 
 int oplus_display_fix_apollo_level(void)

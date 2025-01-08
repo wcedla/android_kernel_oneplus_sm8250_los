@@ -109,6 +109,7 @@ obj-$(CONFIG_PERCPU_STATS) += percpu-stats.o
 obj-$(CONFIG_HMM) += hmm.o
 obj-$(CONFIG_MEMFD_CREATE) += memfd.o
 obj-$(CONFIG_PROCESS_RECLAIM)	+= process_reclaim.o
+obj-$(CONFIG_DAMON) += damon/
 
 #ifdef OPLUS_FEATURE_HEALTHINFO
 obj-y += healthinfo/
@@ -143,3 +144,13 @@ ifeq ($(OPLUS_FEATURE_MEMLEAK_DETECT), yes)
 obj-$(CONFIG_DUMP_TASKS_MEM) += task_mem/
 endif
 #endif /*defined(OPLUS_FEATURE_MEMLEAK_DETECT)
+
+obj-$(CONFIG_MAPPED_PROTECT) += mapped_protect.o
+obj-$(CONFIG_SHRINK_LRU_TRYLOCK) += reclaim_lessdelay.o
+obj-$(CONFIG_KSHRINK_SLABD) += kshrink_slabd.o
+
+#ifdef OPLUS_FEATURE_PROACTIVE_COMPACT
+obj-$(CONFIG_PROACTIVE_COMPACT) += proactive_compact/
+#endif /* OPLUS_FEATURE_PROACTIVE_COMPACT */
+obj-$(CONFIG_OPLUS_UXMEM_OPT) += ux_page_pool.o
+obj-$(CONFIG_OPLUS_DYNAMIC_READAHEAD) += dynamic_readhead.o

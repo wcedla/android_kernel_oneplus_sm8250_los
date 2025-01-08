@@ -13,7 +13,7 @@
 #endif
 #endif
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)
-#include <linux/cpu_jankinfo/jank_cpuload.h>
+#include <linux/sched_info/osi_cpuload.h>
 #endif
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING

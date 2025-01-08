@@ -7,7 +7,7 @@
 
 #define BRIGHTSCREEN_COUNT_FILE    "/data/oplus/log/bsp/brightscreen_count.txt"
 #define BRIGHT_MAX_WRITE_NUMBER            50
-#define BRIGHT_SLOW_TIMEOUT_MS            20000
+#define BRIGHT_SLOW_TIMEOUT_MS            5000
 
 #define BRIGHT_DEBUG_PRINTK(a, arg...)\
     do{\
@@ -52,6 +52,12 @@ int bright_screen_timer_restart(void)
         BRIGHT_DEBUG_PRINTK("bright_screen_timer_restart:g_bright_data.status = %d return\n",g_bright_data.status);
         return g_bright_data.status;
     }
+
+	/* Remove for MTK functioning */
+	if (!is_system_boot_completed()) {
+		BRIGHT_DEBUG_PRINTK("boot not complete, %s just return\n", __func__);
+		/* return -1; */
+	}
 
 #ifdef CONFIG_DRM_MSM
     if(g_bright_data.blank == MSM_DRM_BLANK_UNBLANK)    //MSM_DRM_BLANK_POWERDOWN
@@ -122,7 +128,7 @@ static int get_status(void)
 #endif
 }
 
-static bool get_log_swich(void)
+static bool get_log_swich()
 {
     return  (BRIGHT_STATUS_CHECK_ENABLE == get_status()||BRIGHT_STATUS_CHECK_DEBUG == get_status())&& g_bright_data.get_log;
 }
@@ -144,8 +150,12 @@ static void get_brightscreen_check_dcs_logmap(char* logmap)
 void send_bright_screen_dcs_msg(void)
 {
     char logmap[512] = {0};
+
+    BRIGHT_DEBUG_PRINTK("send_bright_screen_dcs_msg\n");
     get_brightscreen_check_dcs_logmap(logmap);
-    SendDcsTheiaKevent(PWKKEY_DCS_TAG, PWKKEY_DCS_EVENTID, logmap);
+
+    theia_send_event(THEIA_EVENT_BRIGHT_SCREEN_HANG, THEIA_LOGINFO_KERNEL_LOG | THEIA_LOGINFO_ANDROID_LOG,
+            current->pid, logmap);
 }
 
 static void dump_freeze_log(void)
@@ -154,7 +164,7 @@ static void dump_freeze_log(void)
     send_bright_screen_dcs_msg();
 }
 
-static bool is_bright_last_stage_skip(void)
+static bool is_bright_last_stage_skip()
 {
 	int i = 0, nLen;
 	char stage[64] = {0};;
@@ -175,7 +185,7 @@ static bool is_bright_last_stage_skip(void)
 	return false;
 }
 
-static bool is_bright_contain_skip_stage(void)
+static bool is_bright_contain_skip_stage()
 {
 	char stages[512] = {0};
 	int i = 0, nArrayLen;
@@ -192,7 +202,7 @@ static bool is_bright_contain_skip_stage(void)
 	return false;
 }
 
-static bool is_need_skip(void)
+static bool is_need_skip()
 {
 	if (is_bright_last_stage_skip()) {
 		return true;
@@ -205,38 +215,11 @@ static bool is_need_skip(void)
 	return false;
 }
 
-//if the error id contain current pid, we think is a normal resume
-static bool is_normal_resume(void)
-{
-	char current_pid_str[32];
-	sprintf(current_pid_str, "%d", get_systemserver_pid());
-	if (!strncmp(g_bright_data.error_id, current_pid_str, strlen(current_pid_str))) {
-        return true;
-	}
-
-    return false;
-}
-
-static void get_bright_resume_dcs_logmap(char* logmap)
-{
-	snprintf(logmap, 512, "logmap{logType:%s;error_id:%s;resume_count:%u;normalReborn:%s;catchlog:false}", PWKKEY_BRIGHT_SCREEN_DCS_LOGTYPE,
-        g_bright_data.error_id, g_bright_data.error_count, (is_normal_resume() ? "true" : "false"));
-}
-
-static void send_bright_screen_resume_dcs_msg(void)
-{
-    //check the current systemserver pid and the error_id, judge if it is a normal resume or reboot resume
-    char resume_logmap[512] = {0};
-    get_bright_resume_dcs_logmap(resume_logmap);
-    SendDcsTheiaKevent(PWKKEY_DCS_TAG, PWKKEY_DCS_EVENTID, resume_logmap);
-}
-
 static void delete_timer(char* reason, bool cancel) {
     //BRIGHT_DEBUG_PRINTK("delete_timer reason:%s", reason);
     del_timer(&g_bright_data.timer);
 
     if (cancel && g_bright_data.error_count != 0) {
-        send_bright_screen_resume_dcs_msg();
         g_bright_data.error_count = 0;
         sprintf(g_bright_data.error_id, "%s", "null");
     }

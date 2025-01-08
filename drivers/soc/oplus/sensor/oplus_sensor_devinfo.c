@@ -526,7 +526,8 @@ static void parse_accelerometer_sensor_dts(struct sensor_hw *hw, struct device_n
 	int rc = 0;
 	int di = 0;
 	char *feature[] = {
-		"use-sois"
+		"use-sois",
+		"single-acc"
 	};
 
 	hw->feature.feature[0] = 0;/*default not use s-ois */
@@ -610,8 +611,14 @@ static void parse_lux_aod_sensor_dts(struct sensor_algorithm *algo, struct devic
 		algo->parameter[2] = value;
 	}
 
-	SENSOR_DEVINFO_DEBUG("thrd-low: %d, thrd-high: %d, als-type: %d\n",
-		algo->parameter[0], algo->parameter[1], algo->parameter[2]);
+	rc = of_property_read_u32(ch_node, "fold-feature", &value);
+
+	if (!rc) {
+		algo->feature[0] = value;
+	}
+
+	SENSOR_DEVINFO_DEBUG("thrd-low: %d, thrd-high: %d, als-type: %d, fold-feature: %d\n",
+		algo->parameter[0], algo->parameter[1], algo->parameter[2], algo->feature[0]);
 
 }
 

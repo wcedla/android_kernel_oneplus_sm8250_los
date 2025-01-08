@@ -44,10 +44,6 @@ extern void show_regs(struct pt_regs *);
 #include <linux/sched_assist/sched_assist_status.h>
 #endif
 
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-#include <linux/tuning/frame_boost_group.h>
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
-
 /* task_struct member predeclarations (sorted alphabetically): */
 struct audit_context;
 struct backing_dev_info;
@@ -253,6 +249,9 @@ extern int sysctl_cpu_multi_thread;
 #endif
 #ifdef OPLUS_FEATURE_SCHED_ASSIST
 extern int sysctl_slide_boost_enabled;
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+extern int sysctl_input_boost_enabled;
+#endif
 extern int sysctl_boost_task_threshold;
 #endif /* OPLUS_FEATURE_SCHED_ASSIST */
 #ifdef OPLUS_FEATURE_SCHED_ASSIST
@@ -678,12 +677,6 @@ struct ravg {
 	u16 pred_demand_scaled;
 	u64 active_time;
 	u64 last_win_size;
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-	u64 curr_window_exec;
-	u64 prev_window_exec;
-	u64 curr_window_scale;
-	u64 prev_window_scale;
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
 };
 #else
 static inline void sched_exit(struct task_struct *p) { }
@@ -869,6 +862,8 @@ struct task_record {
 #define RECOED_WINIDX_MASK		(RECOED_WINSIZE - 1)
 	u8 winidx;
 	u8 count;
+	u8 top_app_cnt;
+	u8 non_topapp_cnt;
 };
 #endif
 
@@ -878,7 +873,27 @@ union reclaim_limit {
 	unsigned long stop_scan_addr;
 };
 #endif
-
+#if IS_ENABLED(CONFIG_OPLUS_LOCKING_STRATEGY)
+struct locking_info {
+	u64 waittime_stamp;
+	/*
+	 * mutex or rwsem optimistic spin start time. Because a task
+	 * can't spin both on mutex and rwsem at one time, use one common
+	 * threshold time is OK.
+	 */
+	u64 opt_spin_start_time;
+	struct task_struct *holder;
+	bool ux_contrib;
+	/*
+	 * Whether task is ux when it's going to be added to mutex or
+	 * rwsem waiter list. It helps us check whether there is ux
+	 * task on mutex or rwsem waiter list. Also, a task can't be
+	 * added to both mutex and rwsem at one time, so use one common
+	 * field is OK.
+	 */
+	bool is_block_ux;
+};
+#endif
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -1253,6 +1268,10 @@ struct task_struct {
 	/* Mutex deadlock detection: */
 	struct mutex_waiter		*blocked_on;
 #endif
+#ifdef CONFIG_LOCKING_PROTECT
+	unsigned long locking_time_start;
+	unsigned long locking_depth;
+#endif
 
 #ifdef CONFIG_TRACE_IRQFLAGS
 	unsigned int			irq_events;
@@ -1588,6 +1607,11 @@ struct task_struct {
 	int ux_depth;
 	u64 enqueue_time;
 	u64 inherit_ux_start;
+	u64 sum_exec_baseline;
+	u64 total_exec;
+#ifdef CONFIG_OPLUS_UX_IM_FLAG
+	int ux_im_flag;
+#endif
 #ifdef CONFIG_OPLUS_FEATURE_SCHED_SPREAD
         int lb_state;
         int ld_flag;
@@ -1602,9 +1626,17 @@ struct task_struct {
 #ifdef CONFIG_OPLUS_FEATURE_AUDIO_OPT
 	struct task_info oplus_task_info;
 #endif
-
+#ifdef CONFIG_LOCKING_PROTECT
+	struct list_head locking_entry;
+#endif
+#if IS_ENABLED(CONFIG_OPLUS_LOCKING_STRATEGY)
+	struct locking_info lkinfo;
+#endif
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)
 	struct task_record record[OPLUS_NR_CPUS];	/* 2*u64 */
+	u8 total_cnt;
+	u8 top_app_cnt;
+	u8 non_topapp_cnt;
 #endif
 
 #ifdef OPLUS_FEATURE_HEALTHINFO
@@ -1627,18 +1659,22 @@ struct task_struct {
 #ifdef CONFIG_OPLUS_FEATURE_IM
 	int im_flag;
 #endif
-
+#ifdef CONFIG_OPLUS_FEATURE_ABNORMAL_FLAG
+	int abnormal_flag;
+#endif
 #ifdef CONFIG_OPLUS_FEATURE_TPD
 	int tpd;
 	int dtpd; /* dynamic tpd task */
 	int dtpdg; /* dynamic tpd task group */
 	int tpd_st; /* affinity decision from im */
 #endif
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-	struct frame_boost_group *fbg;
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
 	struct list_head fbg_list;
+	unsigned int fbg_state;
 	int fbg_depth;
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
+	bool fbg_running; /* task belongs to a group, and in running */
+	int preferred_cluster_id;
+#endif
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_FDLEAK_CHECK)
 	unsigned int fdleak_flag;
 #endif
@@ -1847,6 +1883,9 @@ extern struct pid *cad_pid;
 /*
  * Per process flags
  */
+#ifdef CONFIG_SHRINK_LRU_TRYLOCK
+#define PF_SHRNIK_LRUVECD	0x00000001      /* Early kill for mce process policy */
+#endif /* CONFIG_SHRINK_LRU_TRYLOCK */
 #define PF_IDLE			0x00000002	/* I am an IDLE thread */
 #define PF_EXITING		0x00000004	/* Getting shut down */
 #define PF_VCPU			0x00000010	/* I'm a virtual CPU */

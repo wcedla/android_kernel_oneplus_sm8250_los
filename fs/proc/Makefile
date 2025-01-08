@@ -40,4 +40,4 @@ obj-y	+= healthinfo/
 #ifdef OPLUS_FEATURE_TASK_CPUSTATS
 obj-y	+= task_cpustats/
 #endif /* OPLUS_FEATURE_TASK_CPUSTATS */
-obj-$(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)	+= cpu_jankinfo/
+obj-$(CONFIG_OPLUS_FEATURE_CPU_JANKINFO)	+= sched_info/

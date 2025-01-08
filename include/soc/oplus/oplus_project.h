@@ -13,6 +13,7 @@
 #define FEATURE1_OPEARTOR_CU_MASK 0100
 #define FEATURE1_OPEARTOR_MAX_MASK 1111
 
+
 enum {
         OPLUS_UNKNOWN,
 };
@@ -89,7 +90,7 @@ typedef struct
 	uint32_t	nAudio;
 	uint32_t	nRF;
 	uint32_t	nFeature[FEATURE_COUNT];
-	uint32_t	nOplusBootMode;
+	uint32_t	nOppoBootMode;
 	uint32_t 	nPCB;
 	uint8_t		nPmicOcp[MAX_OCP];
 	uint8_t		reserved[16]; /*reseved[0] & reserved[1] used for compability of upgrade P->Q*/

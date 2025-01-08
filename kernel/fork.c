@@ -118,10 +118,9 @@
 #ifdef CONFIG_OPLUS_FEATURE_IM
 #include <linux/im/im.h>
 #endif
-
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-#include <linux/tuning/frame_init.h>
-#endif /* CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4 */
+#if IS_ENABLED(CONFIG_OPLUS_LOCKING_STRATEGY)
+#include <linux/sched_assist/sync/futex.h>
+#endif
 
 /*
  * Minimum number of threads to boot the kernel
@@ -949,6 +948,10 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 
 #ifdef CONFIG_MEMCG
 	tsk->active_memcg = NULL;
+#endif
+
+#ifdef CONFIG_OPLUS_FEATURE_ABNORMAL_FLAG
+	tsk->abnormal_flag = 0;
 #endif
 
 #ifdef CONFIG_OPLUS_FEATURE_TPD
@@ -2052,15 +2055,14 @@ static __latent_entropy struct task_struct *copy_process(
 	memset(&p->jank_info, 0, sizeof(struct jank_monitor_info));
 #endif
 #endif /* OPLUS_FEATURE_HEALTHINFO */
+#if IS_ENABLED(CONFIG_OPLUS_LOCKING_STRATEGY)
+	init_task_lkinfo(p);
+#endif
 
 #if defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_SCHED)
 	p->wake_tid = 0;
 	p->running_start_time = 0;
 #endif /* defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_SCHED) */
-
-#ifdef CONFIG_OPLUS_FEATURE_INPUT_BOOST_V4
-	init_task_frame(p);
-#endif
 
 	/* Perform scheduler related setup. Assign this task to a CPU. */
 	retval = sched_fork(clone_flags, p);
